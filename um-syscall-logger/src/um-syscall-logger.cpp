@@ -7,7 +7,11 @@
 #include <windows.h>
 #include <iostream>
 #include <cassert>
+#include <deque>
+#include <mutex>
+#include <thread>
 
+// instrumentation callback info struct
 typedef struct _INSTRUMENTATION_CALLBACK_INFORMATION
 {
     //ULONG Version; // cant not be zero bc it gets checked against reserved...
@@ -15,6 +19,7 @@ typedef struct _INSTRUMENTATION_CALLBACK_INFORMATION
     PVOID Callback; // https://cdn.discordapp.com/attachments/765576637265739789/1125805954894680094/ida64_rEHu1Dzm9a.png
 } INSTRUMENTATION_CALLBACK_INFORMATION, * PINSTRUMENTATION_CALLBACK_INFORMATION;// https://cdn.discordapp.com/attachments/765576637265739789/1125805460050694235/ida64_6dOZkqVu4q.png 
 
+// NtSetInformationProcess typedef
 typedef NTSTATUS( __stdcall* NtSetInformationProcess )
 (
     _In_ HANDLE hProcess,
@@ -23,13 +28,43 @@ typedef NTSTATUS( __stdcall* NtSetInformationProcess )
     _In_ DWORD ProcessInformationSize
 );
 
-extern "C" __int64 ON_SYSCALL_RETURN_IMPL(__int64 return_address, __int64 return_value)
-{
-    int a = 5;
-    
-    a += 10;
+bool debounce = false;
 
-    return a;
+// callback function
+extern "C" void ON_SYSCALL_RETURN_IMPL( _In_ uint8_t* return_address,
+                                        _In_ uint64_t return_value )
+{
+    // so at this point we have to look for the syscall id, now we'll just be looking for `mov eax, ...` or `mov rax, ...` (even tho this already doesnt happen)
+    // your target app might implement manual syscalls, and might implement them differently in which case this function will fail
+    // we'll also be using a static array of syscalls, which may not work for your version of kernel (you could use nt symbols and disassemble each "Nt" stub in ntdll etc etc but this is just a small project)
+
+    if ( debounce )
+        return;
+
+    uint32_t syscall_id = 0u;
+
+    for ( uint32_t count = 0u; count <= 100; count++, return_address-- ) // furthest we go back is 100 bytes (which is already far)
+    {
+        if ( return_address[0] == 0xB8 )
+        {
+            syscall_id = *reinterpret_cast<uint32_t*>(&return_address[1]);
+
+            break;
+        } // 0xB8 = mov eax, ...
+        else if ( return_address[0] == 0x48 && return_address[1] == 0xC7 && return_address[2] == 0xC0 )
+        {
+            syscall_id = *reinterpret_cast<uint32_t*>(&return_address[3]);
+
+            break;
+        } // 0x48 0xC7 0xC0 = mov rax, ...
+    }
+
+    // do a syscall lookup (https://github.com/j00ru/windows-syscalls/blob/master/x64/json/nt-per-system.json)
+    if ( syscall_id )
+    {
+        debounce = true;
+        // k fuck this we need threads
+    }
 }
 
 extern "C" void* ON_SYSCALL_RETURN(); // asm stub
@@ -62,6 +97,10 @@ int main()
 
     NTSTATUS Status = _NtSetInformationProcess( GetCurrentProcess(), static_cast<PROCESS_INFORMATION_CLASS>(40), &ICI, sizeof( INSTRUMENTATION_CALLBACK_INFORMATION ) );
 
-    std::printf( "error: %X", Status );
+    //std::printf( "error: %X", Status );
+    
+    std::free( std::malloc( 0x1000 ) );
+
+    std::this_thread::sleep_for( std::chrono::years( 1 ) ); // that'll do i think
 }
 

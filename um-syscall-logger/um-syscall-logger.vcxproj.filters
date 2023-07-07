@@ -6,4 +6,7 @@
   <ItemGroup>
     <NASM Include="src\on-syscall-return.asm" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\syscall-table.hpp" />
+  </ItemGroup>
 </Project>

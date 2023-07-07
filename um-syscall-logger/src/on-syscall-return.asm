@@ -8,13 +8,18 @@ ON_SYSCALL_RETURN:
 	
 	; https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170#callercallee-saved-registers
 
-	push rax ; save return value of syscall
-	push rcx
-	push rdx
-	push r8
-	push r9
-	push r10 ; save return address of syscall
-	push r11
+	push rax ; save syscall return value
+	push r10 ; save syscall return address
+
+	push rbx
+	push rbp
+	push rdi
+	push rsi
+	; push rsp
+	push r12
+	push r13
+	push r14
+	push r15
 
 	mov rcx, r10 ; move return address
 	mov rdx, rax ; move syscall result
@@ -23,12 +28,14 @@ ON_SYSCALL_RETURN:
 	call ON_SYSCALL_RETURN_IMPL
 	add rsp, 32 ; remove stack space
 
-	pop r11
-	pop r10
-	pop r9
-	pop r8
-	pop rdx
-	pop rcx
-	pop rax
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+	; pop rsp
+	pop rsi
+	pop rdi
+	pop rbp
+	pop rbx
 
 	jmp r10
