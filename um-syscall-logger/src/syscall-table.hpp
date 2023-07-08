@@ -1,7 +1,7 @@
 /*
 *	syscall_table.hpp
 * 
-*	static table of syscalls
+*	static table of syscalls (20H2)
 */
 
 #pragma once

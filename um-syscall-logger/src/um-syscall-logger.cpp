@@ -4,72 +4,69 @@
 *   ...
 */
 
+#include "./process/process.hpp"
+#include "./token/token.hpp"
+
+#include "./syscall-table.hpp"
+
 #include <windows.h>
 #include <iostream>
-#include <cassert>
-#include <deque>
-#include <mutex>
+#include <vector>
 #include <thread>
+#include <mutex>
 
-// instrumentation callback info struct
-typedef struct _INSTRUMENTATION_CALLBACK_INFORMATION
+struct call_info_t
 {
-    //ULONG Version; // cant not be zero bc it gets checked against reserved...
-    //ULONG Reserved; // always zero
-    PVOID Callback; // https://cdn.discordapp.com/attachments/765576637265739789/1125805954894680094/ida64_rEHu1Dzm9a.png
-} INSTRUMENTATION_CALLBACK_INFORMATION, * PINSTRUMENTATION_CALLBACK_INFORMATION;// https://cdn.discordapp.com/attachments/765576637265739789/1125805460050694235/ida64_6dOZkqVu4q.png 
+    uint32_t return_value;
+    uint32_t syscall_id;
+    uint32_t thread_id;
+    uint32_t process_id;
+};
 
-// NtSetInformationProcess typedef
-typedef NTSTATUS( __stdcall* NtSetInformationProcess )
-(
-    _In_ HANDLE hProcess,
-    _In_ PROCESS_INFORMATION_CLASS ProcessInformationClass,
-    LPVOID ProcessInformation,
-    _In_ DWORD ProcessInformationSize
-);
-
-bool debounce = false;
+struct function_info_t
+{
+    HANDLE _process_handle;
+    uintptr_t _syscall_id_name_table;
+    const char* _format_str;
+    uintptr_t _printf;
+    uintptr_t _rpm;
+};
 
 // callback function
-extern "C" void ON_SYSCALL_RETURN_IMPL( _In_ uint8_t* return_address,
-                                        _In_ uint64_t return_value )
+void ON_SYSCALL_RETURN_CALLBACK( uint64_t call_info_address )
 {
-    // so at this point we have to look for the syscall id, now we'll just be looking for `mov eax, ...` or `mov rax, ...` (even tho this already doesnt happen)
-    // your target app might implement manual syscalls, and might implement them differently in which case this function will fail
-    // we'll also be using a static array of syscalls, which may not work for your version of kernel (you could use nt symbols and disassemble each "Nt" stub in ntdll etc etc but this is just a small project)
+    const volatile function_info_t* memory = reinterpret_cast<function_info_t*>(0x1234567878563412); // volatile bc fuck you optimizer
 
-    if ( debounce )
-        return;
+    const HANDLE _process_handle = memory->_process_handle;
+    const uintptr_t _syscall_id_name_table = memory->_syscall_id_name_table;
+    const char* _format_str = memory->_format_str; // this shit SUCKS
+    const uintptr_t _printf = memory->_printf; 
+    const uintptr_t _rpm = memory->_rpm;
+    // this is a horrible solution for a problem i legit didnt think about, gg
 
-    uint32_t syscall_id = 0u;
+    call_info_t call_info;
 
-    for ( uint32_t count = 0u; count <= 100; count++, return_address-- ) // furthest we go back is 100 bytes (which is already far)
-    {
-        if ( return_address[0] == 0xB8 )
-        {
-            syscall_id = *reinterpret_cast<uint32_t*>(&return_address[1]);
-
-            break;
-        } // 0xB8 = mov eax, ...
-        else if ( return_address[0] == 0x48 && return_address[1] == 0xC7 && return_address[2] == 0xC0 )
-        {
-            syscall_id = *reinterpret_cast<uint32_t*>(&return_address[3]);
-
-            break;
-        } // 0x48 0xC7 0xC0 = mov rax, ...
-    }
-
-    // do a syscall lookup (https://github.com/j00ru/windows-syscalls/blob/master/x64/json/nt-per-system.json)
-    if ( syscall_id )
-    {
-        debounce = true;
-        // k fuck this we need threads
-    }
+    reinterpret_cast<decltype(&ReadProcessMemory)>(_rpm)( _process_handle, reinterpret_cast<void*>(call_info_address), &call_info, sizeof( call_info_t ), nullptr );
+    
+    reinterpret_cast<decltype(&printf)>(_printf)(_format_str, reinterpret_cast<char**>(_syscall_id_name_table)[call_info.syscall_id], call_info.return_value, call_info.thread_id, call_info.process_id);
 }
 
+void ON_SYSCALL_RETURN_CALLBACK_END() {};
+
+// bounds
+extern "C" __int64 ASM_BLOCK_START; // marks start of asm stub
+extern "C" __int64 ASM_BLOCK_END; // marks end of asm stub
+
+// variables
+extern "C" HANDLE HOST_HANDLE_VALUE; // asm handle value
+extern "C" uintptr_t HOST_CALLBACK_ADDRESS;
+extern "C" uintptr_t NtCreateThreadEx;
+extern "C" uintptr_t NtWaitForSingleObject;
+
+// function
 extern "C" void* ON_SYSCALL_RETURN(); // asm stub
 
-int main()
+int main( _In_ int argc, _In_ char* argv[] )
 {
     // instrumented return (this is too op...) https://cdn.discordapp.com/attachments/765576637265739789/1125172825184018512/ida64_lQyI481Ke1.png
     // ApcState.Process has xrefs to NtSetInformationProcess https://cdn.discordapp.com/attachments/765576637265739789/1125362349818253312/ida64_S7qh5I6nMU.png
@@ -87,20 +84,119 @@ int main()
 
     // idk if i should keep these comments
 
-    INSTRUMENTATION_CALLBACK_INFORMATION ICI{ &ON_SYSCALL_RETURN };
+    // app running as admin?
+    if ( !token::adjust_token_privilege( SE_DEBUG_NAME, true ) )
+    {
+        std::printf( "app must run as administrator\n" );
 
-    const HMODULE ntdll = LoadLibraryA( "ntdll.dll" );
+        std::cin.get();
+        return FALSE;
+    }
+
+    // user specified a process name?
+    if ( argc != 2 )
+    {
+        std::printf( "please specify a process file name, e.g. notepad.exe\n" );
+        
+        std::cin.get();
+        return FALSE;
+    }
+
+    // get ntdll
+    static HMODULE ntdll = GetModuleHandleA( "ntdll.dll" );
 
     assert( ntdll );
 
-    const NtSetInformationProcess _NtSetInformationProcess = reinterpret_cast<NtSetInformationProcess>(GetProcAddress( ntdll, "NtSetInformationProcess" ));
+    // get exported funcs
+    static FARPROC _NtCreateThreadEx = GetProcAddress( ntdll, "NtCreateThreadEx" );
+    static FARPROC _NtWaitForSingleObject = GetProcAddress( ntdll, "NtWaitForSingleObject" );
 
-    NTSTATUS Status = _NtSetInformationProcess( GetCurrentProcess(), static_cast<PROCESS_INFORMATION_CLASS>(40), &ICI, sizeof( INSTRUMENTATION_CALLBACK_INFORMATION ) );
+    // thread storage
+    std::vector<std::thread> thread_storage{};
 
-    //std::printf( "error: %X", Status );
-    
-    std::free( std::malloc( 0x1000 ) );
+    // when we unlock this mutex, the threads will end
+    std::mutex destroy_threads{};
 
-    std::this_thread::sleep_for( std::chrono::years( 1 ) ); // that'll do i think
+    // lock it
+    destroy_threads.lock();
+
+    // load debugger
+    process app{ argv[1] };
+
+    for ( const process::instance_t& instance : app.get_instances() )
+    {
+        thread_storage.emplace_back( [&]() -> void
+        {
+            // duplicate handle to current process into target process
+            HANDLE dup_handle_value{ 0 };
+
+            DuplicateHandle( GetCurrentProcess(), GetCurrentProcess(), instance.process_handle, &dup_handle_value, NULL, FALSE, DUPLICATE_SAME_ACCESS );
+
+            // calculate callback size
+            const size_t callback_size = reinterpret_cast<uintptr_t>(&ON_SYSCALL_RETURN_CALLBACK_END) - reinterpret_cast<uintptr_t>(&ON_SYSCALL_RETURN_CALLBACK);
+
+            // allocate memory for callback
+            auto callback = VirtualAlloc( NULL, callback_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE );
+
+            assert( callback );
+
+            // copy function
+            std::memcpy( callback, &ON_SYSCALL_RETURN_CALLBACK, callback_size );
+
+            function_info_t function_info{ instance.process_handle, reinterpret_cast<uintptr_t>(&syscall_id_name_table), "syscall: %s, return value: %u, thread id: %u, process id: %u\n", reinterpret_cast<uintptr_t>(&printf), reinterpret_cast<uintptr_t>(&ReadProcessMemory) }; // this is a disgrace
+
+            // look for -1
+            uint8_t* current = reinterpret_cast<uint8_t*>(callback);
+            
+            while ( *reinterpret_cast<uint64_t*>(current) != static_cast<uint64_t>(0x1234567878563412) ) // this kind of sucks
+                current++;
+
+            // write handle (this shit is horrible)
+            *reinterpret_cast<function_info_t**>(current) = &function_info;
+
+            // copy handle into stub
+            *reinterpret_cast<HANDLE*>(&HOST_HANDLE_VALUE) = dup_handle_value;
+
+            // copy callback
+            *reinterpret_cast<uintptr_t*>(&HOST_CALLBACK_ADDRESS) = reinterpret_cast<uintptr_t>(callback);
+
+            // copy exports
+            *reinterpret_cast<uintptr_t*>(&NtCreateThreadEx) = reinterpret_cast<uintptr_t>(_NtCreateThreadEx);
+            *reinterpret_cast<uintptr_t*>(&NtWaitForSingleObject) = reinterpret_cast<uintptr_t>(_NtWaitForSingleObject);
+
+            // calculate block size
+            const size_t asm_block_size = reinterpret_cast<uintptr_t>(&ASM_BLOCK_END) - reinterpret_cast<uintptr_t>(&ASM_BLOCK_START);
+
+            // copy stub into target process
+            auto memory = instance.allocate( asm_block_size, PAGE_EXECUTE_READWRITE );
+
+            instance.write_process_memory( memory.get(), &ASM_BLOCK_START, asm_block_size );
+
+            // set instrumentation ptr to memory
+            instance.set_instrumentation_callback( reinterpret_cast<char*>(memory.get()) + (reinterpret_cast<uintptr_t>(&ON_SYSCALL_RETURN) - reinterpret_cast<uintptr_t>(&ASM_BLOCK_START)) );
+
+            // mutex is currently locked, so the current thread was to wait for it to unlock before we continue
+            destroy_threads.lock();
+            
+            instance.set_instrumentation_callback( static_cast<__int64>(0) ); // unload hook
+
+            // everything in here is smart pointers, but icba to make one for virtual memory
+            VirtualFree( callback, NULL, MEM_RELEASE );
+
+            // kill next thread
+            destroy_threads.unlock();
+        } );
+    }
+
+    std::cin.get();
+
+    // kill threads
+    destroy_threads.unlock();
+
+    // wait for threads to finish
+    for ( std::thread& thread : thread_storage )
+        thread.join();
 }
+
+// im probably not looking at this again
 
