@@ -2,4 +2,4 @@
 
 dont look at this pls
 
-![image](https://github.com/xChonkster/um-syscall-logger/assets/77835350/43af4467-e85d-46e8-9f38-6a2fb97e7d96)
+![devenv_WJeHwLvamy](https://github.com/xChonkster/um-syscall-logger/assets/77835350/6f80b1b2-f8ac-4f25-9830-c73987b01cb0)
