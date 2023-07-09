@@ -21,7 +21,12 @@
   <ItemGroup>
     <ClCompile Include="src\process\process.cpp" />
     <ClCompile Include="src\token\token.cpp" />
-    <ClCompile Include="src\um-syscall-logger.cpp" />
+    <ClCompile Include="src\um-syscall-logger.cpp">
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Disabled</Optimization>
+      <WholeProgramOptimization Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</WholeProgramOptimization>
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Disabled</Optimization>
+      <WholeProgramOptimization Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</WholeProgramOptimization>
+    </ClCompile>
     <ClInclude Include="src\token\token.hpp" />
     <ClInclude Include="src\utility\concept.hpp">
       <FileType>CppHeader</FileType>

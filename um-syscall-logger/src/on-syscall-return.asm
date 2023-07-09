@@ -1,149 +1,147 @@
 section .data
 use64
 
-global ASM_BLOCK_START
-ASM_BLOCK_START:
+global asm_block_start
+asm_block_start:
 	dq 0
 
-global HOST_HANDLE_VALUE
-HOST_HANDLE_VALUE:
+global host_handle_value
+host_handle_value:
 	dq 0
 
-global HOST_CALLBACK_ADDRESS:
-HOST_CALLBACK_ADDRESS:
+global host_callback_address
+host_callback_address:
 	dq 0
 
 global NtCreateThreadEx
 NtCreateThreadEx:
 	dq 0
 
-global NtWaitForSingleObject
-NtWaitForSingleObject:
+global NtAllocateVirtualMemory
+NtAllocateVirtualMemory:
 	dq 0
 
-global ON_SYSCALL_RETURN
-ON_SYSCALL_RETURN:
-	; int 3 ; - software interrupt to invoke the debugger
+global instrumentation_callback_stub
+instrumentation_callback_stub:
+	cmp qword [rsp], 0 ; ntdll.dll!KiUserCallbackDispatcher
+	je .jmp
 
-	; check for recursion
+.prologue:
+	push rcx
+	push rdx
+	push r8
+	push r9
 
-	lea rcx, [rel ASM_BLOCK_START] ; start of asm block
-	cmp rcx, [rsp] ; top of stack = return address
-	ja .START ; jump out if less than &ASM_BLOCK_START
+	lea rcx, [rel asm_block_start]
+	lea rdx, [rel asm_block_end]
+
+	cmp rcx, [rsp + 32] ; [rsp] = return address
+	ja .start ; rcx > [rsp] ? jmp out
 	
-	lea rcx, [rel ASM_BLOCK_END] ; end of asm block
-	cmp rcx, [rsp]
-	ja .END ; if (retaddr > &ASM_BLOCK_START && retaddr < &ASM_BLOCK_END) return;
+	cmp rdx, [rsp + 32]
+	ja .epilogue ; rdx > [rsp] ? jmp to end
 
-	; https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170#callercallee-saved-registers
+.start:
+	push rax ; save return value
+	push r10 ; save return address
 
-.START:
-	push rax ; savesyscall return value
-	push r10 ; save syscall return address
+	sub rsp, 96 ; reserve stack space
 
-	push rbx
-	push rbp
-	push rdi
-	push rsi
-	; push rsp
-	push r12
-	push r13
-	push r14
-	push r15
+.allocate:
+	mov qword [rsp + 40], 0x04 ; PAGE_READWRITE
 
-	sub rsp, 112 ; reserve space for handle, args, struct and 32 bytes scratch space
+	mov qword [rsp + 32], 0x3000 ; MEM_RESERVE | MEM_COMMIT
+	and dword [rsp + 32], 0xFFFFFFC0 ; (https://cdn.discordapp.com/attachments/765576637265739789/1127338721369403574/ida64_TdfdkFjwRl.png)
 
-	mov [rsp + 96], rax ; save return address in stack space
+	lea r9, [rsp + 88]
+	mov qword [r9], 24 ; move size of call_info_t struct
+	
+	xor r8, r8 ; ZeroBits
+
+	lea rdx, [rsp + 80] ; BaseAddress
+	mov qword [rdx], 0 ; make sure its 0
+
+	mov rcx, -1 ; ProcessHandle
+
+	lea rax, [rel NtAllocateVirtualMemory]
+	call [rax] ; call
+
+.populate:
+	mov rcx, [rsp + 80] ; BaseAddress
+
+	mov rdx, [rsp + 144]
+	mov qword [rcx], rdx ; set return address
+
+	mov rax, [rsp + 104] ; read return value
+	mov dword [rcx + 8], eax ; set return value
+
+	mov r10, [rsp + 96] ; r10 has been modified by NtAllocateVirtualMemory, so we restore it
+
+	; inlined the loop nvm
+.loopstart:
+	cmp byte [r10], 0xB8
+	je .found
+
+	; didnt match
+	dec r10
+	jmp .loopstart
+	
+.found:
+	mov eax, [r10 + 1] ; found it
+
+	mov dword [rcx + 12], eax ; set syscall id
 
 	mov rax, gs:0x30 ; read TEB
-	mov ecx, [rax + 0x48] ; read ->ClientId.UniqueThread (https://cdn.discordapp.com/attachments/765576637265739789/1127179188038811648/ida64_FuXhzSdOJe.png)
-	mov edx, [rax + 0x40] ; read ->ClientId.UniqueProcess (https://cdn.discordapp.com/attachments/765576637265739789/1127259074694746212/ida64_yTUzSN38jQ.png)
+	mov rdx, [rax + 0x48] ; read ->ClientId.UniqueThread (https://cdn.discordapp.com/attachments/765576637265739789/1127179188038811648/ida64_FuXhzSdOJe.png)
 
-	mov dword [rsp + 104], ecx ; save thread id
-	mov dword [rsp + 108], edx ; save process id
+	mov dword [rcx + 16], edx ; set thread id
 
-	; look for syscall id at return address
-.READLOOP:
-	cmp byte [r10], 0xB8 ; mov eax, ...
-	je .FOUNDMOVEAX
+	mov rdx, [rax + 0x40] ; read ->ClientId.UniqueProcess (https://cdn.discordapp.com/attachments/765576637265739789/1127259074694746212/ida64_yTUzSN38jQ.png)
 
-	cmp byte [r10], 0x48 ; mov rax, ...
-	jne .CONTINUE
+	mov dword [rcx + 20], edx ; set process id
 
-	cmp byte [r10 + 1], 0xC7
-	jne .CONTINUE
-
-	cmp byte [r10 + 2], 0xC0
-	je .FOUNDMOVRAX
-	
-.CONTINUE:
-	dec r10 ; dec r10 until we get to "mov eax, ..." or "mov rax, ..." (gg manual syscalls)
-	jmp .READLOOP
-
-.FOUNDMOVEAX:
-	mov eax, dword [r10 + 1]
-	mov dword [rsp + 100], eax ; rsp + 96 = struct + 4 + 4 = 104 = syscall_id
-	jmp .CREATETHREAD
-
-.FOUNDMOVRAX: ; untested
-	mov eax, dword [r10 + 3]
-	mov dword [rsp + 100], eax
-
-.CREATETHREAD:
-	; when you do a push, the stack grows down, so the first push is the furthest up
+.dispatch:
+	; memory is done at this point, we can pass it to host
 
 	mov qword [rsp + 80], 0 ; extended attributes (?)
 	mov qword [rsp + 72], 0 ; stack reserve size
 	mov qword [rsp + 64], 0 ; stacksize
 	mov qword [rsp + 56], 0 ; ?
 	mov qword [rsp + 48], 0 ; CREATE_SUSPENDED (0)
-	lea rax, [rsp + 96] ; get address of struct
-	mov qword [rsp + 40], rax ; parameter
+	mov qword [rsp + 40], rcx ; rcx contains address of memory
 
-	lea r9, [rel HOST_CALLBACK_ADDRESS] ; read relative
+	lea r9, [rel host_callback_address] ; read relative
 	mov r9, [r9]
 	mov qword [rsp + 32], r9 ; callback address
-	
-	lea r9, [rel HOST_HANDLE_VALUE] ; read relative
+
+	lea r9, [rel host_handle_value] ; read relative
 	mov r9, [r9] ; process handle
 
-	mov r8, 0 ; object attributes
+	xor r8, r8 ; object attributes
 	mov rdx, 0x1FFFFF ; access parameter
 	lea rcx, [rsp + 88] ; thread handle ref
 
 	lea rax, [rel NtCreateThreadEx] ; read relative
 	call [rax] ; do the call
 
-	; we now need to NtWaitForSingleObject
+.end:
+	add rsp, 96 ; reclaim stack space
 
-	mov r8, 0 ; Timeout (0 = INFINITE) (https://cdn.discordapp.com/attachments/765576637265739789/1127251571491749978/ida64_h9aWTslnk6.png)
-	mov rdx, 0 ; Alertable
-	mov rcx, [rsp + 88] ; handle value
+	pop r10 ; restore return address
+	pop rax ; restore return value
 
-	lea rax, [rel NtWaitForSingleObject] ; read relative
-	call [rax] ; do the call:tm:
+.epilogue:
+	; restore used
+	pop r9
+	pop r8
+	pop rdx
+	pop rcx
 
-	; reclaim stack space
-	add rsp, 112 ; 8 (handle) + 32 (scratch) + (7 * 8 = 56) (args) + (4 * 4 = 16) (struct) = 112
-	
-	; restore registers
-	pop r15
-	pop r14
-	pop r13
-	pop r12
-	; pop rsp
-	pop rsi
-	pop rdi
-	pop rbp
-	pop rbx
-
-	pop r10 ; restore syscall return address
-	pop rax ; restore syscall return value
-
-.END:
+.jmp:
+	; jmp to return address
 	jmp r10
 
-global ASM_BLOCK_END
-ASM_BLOCK_END:
+global asm_block_end
+asm_block_end:
 	dq 0
 

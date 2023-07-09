@@ -481,5 +481,5 @@ const char* syscall_id_name_table[] =
     "NtLoadKey3",
 }; // array is sorted
 
-const size_t syscall_id_name_table_size = sizeof( syscall_id_name_table );
+constexpr size_t syscall_id_name_table_size = sizeof( syscall_id_name_table ) / sizeof( syscall_id_name_table[0] );
 

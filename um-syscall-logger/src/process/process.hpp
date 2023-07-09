@@ -28,8 +28,17 @@ typedef NTSTATUS( __stdcall* NtSetInformationProcess )
 (
     _In_ HANDLE hProcess,
     _In_ PROCESS_INFORMATION_CLASS ProcessInformationClass,
-    LPVOID ProcessInformation,
+    _Out_ LPVOID ProcessInformation,
     _In_ DWORD ProcessInformationSize
+);
+
+typedef NTSTATUS( __stdcall* NtQueryInformationProcess )
+(
+	_In_ HANDLE ProcessHandle,
+	_In_ PROCESS_INFORMATION_CLASS ProcessInformationClass,
+	_Out_ PVOID ProcessInformation,
+	_In_ ULONG ProcessInformationLength,
+	_Out_opt_ PULONG ReturnLength
 );
 
 class process
@@ -80,7 +89,7 @@ public:
 			return WriteProcessMemory( process_handle, reinterpret_cast<void*>(address), reinterpret_cast<const void*>(buffer), size, nullptr );
 		}
 
-		constexpr NTSTATUS set_instrumentation_callback( _In_ integral_or_pointer auto address ) const
+		inline NTSTATUS set_instrumentation_callback( _In_ integral_or_pointer auto address ) const
 		{
 			// get handle to ntdll
 			static const HMODULE ntdll = GetModuleHandleA( "ntdll.dll" );
